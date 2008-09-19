@@ -1,0 +1,76 @@
+#!/usr/bin/env ruby
+
+require 'cgi'
+require 'open-uri'
+require 'hpricot'
+
+requested_package = ARGV[0]
+requested_version = ARGV[1]
+
+$stdout.puts "Downloading #{requested_package} #{requested_version ? "v#{requested_version}" : ''} from sourceforge.net"
+
+project_page = "http://sourceforge.net/projects/#{requested_package}/"
+
+data = open(project_page).read
+
+SFRelease = Struct.new(:name, :version, :link)
+
+if link = (Hpricot(data) / 'a[@href^=/project/showfiles.php]').first
+  data = open("http://sourceforge.net" + link['href'])
+  releases = (Hpricot(data) / 'table[@summary=Latest file listings]') / '/tbody/tr'
+
+  releases = releases.map do |release_row|
+    name = (release_row / 'td:first').inner_text
+    version = (release_row / 'td[2]').inner_text
+    link = "http://sourceforge.net" + (release_row / 'td[@class=download]').at('a')['href']
+    SFRelease.new(name, version, link)
+  end
+
+  release = releases.detect { |r| (r.name == requested_package) && (r.version == requested_version) }
+  
+  if release.nil?
+    $stdout.puts "I coulnd't find the package you're looking for, are any of these what you're looking for?"
+    
+    max_name_length = releases.inject(0) { |max, release| max = release.name.size if release.name.size > max; max }
+    max_version_length = releases.inject(0) { |max, release| max = release.version.size if release.version.size > max; max }
+    
+    releases.each_with_index do |release, index|
+      puts "#{(index+1).to_s.rjust(2, ' ')}: #{release.name.ljust(max_name_length + 3, ' ')} - #{release.version}"
+    end
+
+    puts "#{'-' * (max_name_length + max_version_length + 10)}\n#{(releases.size + 1).to_s.rjust(2, ' ')}: Quit"
+
+    answer = ''
+    until (answer =~ /^(\d+)$/) && ($1.to_i <= (releases.size + 1))
+      $stdout << "Choose Package: "
+      answer = $stdin.readline
+    end
+
+    if answer.to_i < (releases.size + 1)
+      release = releases[answer.to_i - 1]
+    end
+  end
+
+  exit(1) unless release
+
+  release_doc = Hpricot(open(release.link).read)
+
+  if download_url = (release_doc / 'a[@href^=http://downloads.sourceforge.net]').first['href']
+    download_uri = URI.parse(download_url)
+    download_url = download_uri.to_s.sub('?' + download_uri.query, '')
+    filename = File.basename(download_url)
+
+    `curl -s -L -C - -O "#{download_url}"`
+
+    if File.exists?(filename)
+      puts "Downloaded #{filename}"
+    else
+      puts "Failed to download"
+    end
+  else
+    puts "Couldn't find the download link"
+  end
+
+else
+  $stderr << "Couldn't find Project Group Id on #{project_page}"
+end
